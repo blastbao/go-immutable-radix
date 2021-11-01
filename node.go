@@ -5,69 +5,90 @@ import (
 	"sort"
 )
 
-// WalkFn is used when walking the tree. Takes a
-// key and value, returning if iteration should
-// be terminated.
+// WalkFn is used when walking the tree.
+// Takes a key and value, returning if iteration should be terminated.
 type WalkFn func(k []byte, v interface{}) bool
 
 // leafNode is used to represent a value
 type leafNode struct {
-	mutateCh chan struct{}
-	key      []byte
-	val      interface{}
+	mutateCh chan struct{}	// 变更通知管道
+	key      []byte			// 键
+	val      interface{}	// 值
 }
 
 // edge is used to represent an edge node
 type edge struct {
-	label byte
-	node  *Node
+	label byte		// 标签
+	node  *Node		// 节点
 }
 
 // Node is an immutable node in the radix tree
+//
+// Node 是基数树中的不可变节点
 type Node struct {
+
 	// mutateCh is closed if this node is modified
+	// 变更通知管道
 	mutateCh chan struct{}
 
 	// leaf is used to store possible leaf
+	// 叶节点
 	leaf *leafNode
 
 	// prefix is the common prefix we ignore
+	// 公共前缀
 	prefix []byte
 
 	// Edges should be stored in-order for iteration.
 	// We avoid a fully materialized slice to save memory,
 	// since in most cases we expect to be sparse
+	//
+	// edges 应按迭代顺序存储。
+	// 为了节省内存，我们避免使用 fully materialized 的切片，因为多数情况下切片是稀疏的。
 	edges edges
 }
 
+// 是否为叶节点
 func (n *Node) isLeaf() bool {
 	return n.leaf != nil
 }
 
+// 添加边，若存在则覆盖
 func (n *Node) addEdge(e edge) {
+	// 边总数
 	num := len(n.edges)
+	// 根据 label 二分查找，判断是否已经存在
 	idx := sort.Search(num, func(i int) bool {
 		return n.edges[i].label >= e.label
 	})
+	// 添加边
 	n.edges = append(n.edges, e)
+	// 如果边已经存在，则更新该边
 	if idx != num {
+		// 移除 n.edges[idx]
 		copy(n.edges[idx+1:], n.edges[idx:num])
+		// 更新 n.edges[idx]
 		n.edges[idx] = e
 	}
 }
 
+// 替换边
 func (n *Node) replaceEdge(e edge) {
+	// 查找边
 	num := len(n.edges)
 	idx := sort.Search(num, func(i int) bool {
 		return n.edges[i].label >= e.label
 	})
+	// 如果边已经存在，则更新
 	if idx < num && n.edges[idx].label == e.label {
 		n.edges[idx].node = e.node
 		return
 	}
+	// 如果边不存在，panic
 	panic("replacing missing edge")
 }
 
+// 查找边，返回下标和子节点
 func (n *Node) getEdge(label byte) (int, *Node) {
 	num := len(n.edges)
 	idx := sort.Search(num, func(i int) bool {
@@ -91,6 +112,8 @@ func (n *Node) getLowerBoundEdge(label byte) (int, *Node) {
 	return -1, nil
 }
 
+
+// 删除边
 func (n *Node) delEdge(label byte) {
 	num := len(n.edges)
 	idx := sort.Search(num, func(i int) bool {
@@ -103,34 +126,44 @@ func (n *Node) delEdge(label byte) {
 	}
 }
 
+// GetWatch xxx
 func (n *Node) GetWatch(k []byte) (<-chan struct{}, interface{}, bool) {
 	search := k
 	watch := n.mutateCh
+
 	for {
 		// Check for key exhaustion
 		if len(search) == 0 {
+			// 如果当前节点为叶节点，就直接返回 `通知管道、值、true`
 			if n.isLeaf() {
 				return n.leaf.mutateCh, n.leaf.val, true
 			}
+			// 未找到
 			break
 		}
 
 		// Look for an edge
+		// 在当前节点中查找边，返回下标(_)和边节点
 		_, n = n.getEdge(search[0])
 		if n == nil {
+			// 未找到
 			break
 		}
 
 		// Update to the finest granularity as the search makes progress
+		// 随着搜索的进行，更新到最精细的粒度
 		watch = n.mutateCh
 
 		// Consume the search prefix
+		// 移除节点前缀
 		if bytes.HasPrefix(search, n.prefix) {
 			search = search[len(n.prefix):]
 		} else {
+			// 未找到
 			break
 		}
 	}
+
 	return watch, nil, false
 }
 
@@ -145,6 +178,7 @@ func (n *Node) LongestPrefix(k []byte) ([]byte, interface{}, bool) {
 	var last *leafNode
 	search := k
 	for {
+
 		// Look for a leaf node
 		if n.isLeaf() {
 			last = n.leaf
